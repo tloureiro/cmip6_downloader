@@ -23,7 +23,7 @@ def download_file(url_to_download, variable_name, index):
     print('\t Downloading file [' + str(index) + '/' + str(len(files_to_download)) +']' + url_to_download)
 
     for currentRun in range(0, 6):
-        result_code = os.system('wget -nc -c --retry-connrefused --waitretry=10 --quiet -P ' + variable_name + ' ' + url_to_download + ' > /dev/null')
+        result_code = os.system('wget -nc -c --retry-connrefused --waitretry=10 --quiet -o /dev/null -P ' + variable_name + ' ' + url_to_download )
         if result_code == 0:
             break
 
