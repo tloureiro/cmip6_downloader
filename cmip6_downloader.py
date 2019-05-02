@@ -20,7 +20,7 @@ def get_files_to_download(url_files_search):
 
 def download_file(url_to_download, variable_name, index):
 
-    print('\t Downloading file [' + str(index) + '/' + str(len(files_to_download)) +']' + url_to_download)
+    print('\t Downloading file [' + str(index) + '/' + str(len(files_to_download)) +'] ' + url_to_download)
 
     for currentRun in range(0, 6):
         result_code = os.system('wget -nc -c --retry-connrefused --waitretry=10 --quiet -o /dev/null -P ' + variable_name + ' ' + url_to_download )
@@ -59,7 +59,7 @@ if __name__ == '__main__':
                 file.write(file_to_download + '\n')
             file.close()
 
-        print('4- Downloading files')
+        print('4- Downloading files...')
         pool_download = multiprocessing.Pool(int(number_of_processes / 5))
         index = 1
         for file_to_download in files_to_download:
@@ -68,7 +68,9 @@ if __name__ == '__main__':
         pool_download.close()
         pool_download.join()
 
+        print('Done :)')
+
         if len(failed_files) > 0:
-            print('The script was not able to download some files:')
+            print('The script was not able to download some files (you can try running the script again):')
             for failed_file in failed_files:
                 print(failed_file)
