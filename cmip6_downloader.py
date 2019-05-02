@@ -4,11 +4,10 @@ import random
 import multiprocessing
 import os
 
-# todo: check if wget completed,  
-
 number_of_processes = 50
-manager = multiprocessing.Manager()
-files_to_download = manager.list()
+files_to_download = multiprocessing.Manager().list()
+failed_files = multiprocessing.Manager().list()
+
 
 def get_files_to_download(url_files_search):
     with urllib.request.urlopen(url_files_search) as result:
@@ -18,8 +17,19 @@ def get_files_to_download(url_files_search):
             if file_url_to_download.split('|')[2] == 'HTTPServer':
                 files_to_download.append(file_url_to_download.split('|')[0])
 
-def download_file(url_to_download, variable_name):
-    os.system('wget -nc -c -P ' + variable_name + ' ' + url_to_download)
+
+def download_file(url_to_download, variable_name, index):
+
+    print('\t Downloading file [' + str(index) + '/' + str(len(files_to_download)) +']' + url_to_download)
+
+    for currentRun in range(0, 6):
+        result_code = os.system('wget -nc -c --retry-connrefused --waitretry=10 --quiet -P ' + variable_name + ' ' + url_to_download + ' > /dev/null')
+        if result_code == 0:
+            break
+
+    if result_code != 0:
+        print('Failed to download ' + url_to_download)
+        failed_files.append(url_to_download)
 
 
 
@@ -48,10 +58,17 @@ if __name__ == '__main__':
             for file_to_download in files_to_download:
                 file.write(file_to_download + '\n')
             file.close()
-        print(files_to_download)
 
-        pool_download = multiprocessing.Pool(number_of_processes / 5)
+        print('4- Downloading files')
+        pool_download = multiprocessing.Pool(int(number_of_processes / 5))
+        index = 1
         for file_to_download in files_to_download:
-            pool_download.apply_async(download_file, args=[file_to_download, variable_name + '_' + frequency])
+            pool_download.apply_async(download_file, args=[file_to_download, variable_name + '_' + frequency, index])
+            index += 1
         pool_download.close()
         pool_download.join()
+
+        if len(failed_files) > 0:
+            print('The script was not able to download some files:')
+            for failed_file in failed_files:
+                print(failed_file)
