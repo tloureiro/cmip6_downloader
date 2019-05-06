@@ -11,5 +11,5 @@ Also, a file list is generated and placed in the root folder. Inside this .txt f
 
 Note: Some files might not be downloaded when you run this script (the script will even retry downloading them), if this happens, you can run the script again, provide the same search parameters and only new or previously failed files will be downloaded.
 
-Bugs, questions or request for new features, thiago@tloureiro.com
+Bugs, questions or request for new features: thiago@tloureiro.com
 
