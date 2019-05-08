@@ -2,7 +2,7 @@ __How to run it:__
 
 1) create a folder and place the cmip6_downloader.py file inside of it 
 2) run python3 cmip6_downloader.py
-3) when prompted, give it a variable name (i.e. type “siarean” for Arctic sea ice area), time frequency (i.e. type “mo” for monthly data), experiment id and it’s off to the races.
+3) when prompted, give it a variable name (i.e. type “siarean” for Arctic sea ice area), time frequency (i.e. type “mon” for monthly data), experiment id and it’s off to the races.
 
 The script will create a folder for each group of downloaded files following the following standard:
 <variable_id>\_\<frequency>\_<experiment_id>
