@@ -1,3 +1,6 @@
+__Requirements:__
+- Python 3
+
 __How to run it:__
 
 1) create a folder and place the cmip6_downloader.py file inside of it 
