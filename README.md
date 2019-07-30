@@ -4,9 +4,10 @@ __Requirements:__
 __How to run it:__
 
 1) If you do not have python, you can download it here: https://www.python.org/downloads/
-2) Open a terminal window and change directories to the new folder
-3) Type: python3 cmip6_downloader.py
-4) When prompted, give it a variable name (i.e. type “siarean” for Arctic sea ice area), time frequency (i.e. type “mon” for monthly data), experiment id and it’s off to the races. See https://esgf-node.llnl.gov/search/cmip6/ for list of variable names, time frequencies, and experiments.
+2) Create a folder and place the cmip6_downloader.py file inside of it
+3) Open a terminal window and change directories to the new folder
+4) Type: python3 cmip6_downloader.py
+5) When prompted, give it a variable name (i.e. type “siarean” for Arctic sea ice area), time frequency (i.e. type “mon” for monthly data), experiment id and it’s off to the races. See https://esgf-node.llnl.gov/search/cmip6/ for list of variable names, time frequencies, and experiments.
 
 The script will create a folder for each group of downloaded files following the following standard:
 <variable_id>\_\<frequency>\_<experiment_id>
