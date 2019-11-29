@@ -35,29 +35,42 @@ def download_file(url_to_download, variable_name, index):
 
 if __name__ == '__main__':
 
-    variable_name = input("enter the variable name\n")
+    variable_value = input("enter the variable name\n")
     frequency_value = input("enter the frequency\n")
-    experiment_id = input("enter the experiment ID\n")
+    experiment_value = input("enter the experiment ID\n")
+    cmip_version_value = input('cmip5 or cmip6? (empty value will assume cmip6)\n')
+
+    if cmip_version_value != '5' and cmip_version_value.lower != 'cmip5':
+        cmip_version_value = '6'
+        variable_get_param = 'variable_id'
+        frequency_get_param = 'frequency'
+        experiment_get_param = 'experiment_id'
+    else:
+        cmip_version_value = '5'
+        variable_get_param = 'variable'
+        frequency_get_param = 'time_frequency'
+        experiment_get_param = 'experiment'
 
     variable = ''
-    if variable_name:
-        variable = '&variable_id=' + variable_name
+    if variable_value:
+        variable = '&' + variable_get_param + '=' + variable_value
     else:
-        variable_name = 'all'
+        variable_value = 'all'
 
     frequency = ''
     if frequency_value:
-        frequency = '&frequency=' + frequency_value
+        frequency = '&' + frequency_get_param + '=' + frequency_value
     else:
         frequency_value = 'all'
 
     experiment = ''
-    if experiment_id:
-        experiment = '&experiment_id=' + experiment_id
+    if experiment_value:
+        experiment = '&' + experiment_get_param + '=' + experiment_value
     else:
-        experiment_id = 'all'
+        experiment_value = 'all'
 
-    url = 'https://esgf-node.llnl.gov/esg-search/search/?offset=0&limit=10000&type=Dataset&replica=false&latest=true&project=CMIP6&' + variable + frequency + experiment + '&facets=mip_era%2Cactivity_id%2Cmodel_cohort%2Cproduct%2Csource_id%2Cinstitution_id%2Csource_type%2Cnominal_resolution%2Cexperiment_id%2Csub_experiment_id%2Cvariant_label%2Cgrid_label%2Ctable_id%2Cfrequency%2Crealm%2Cvariable_id%2Ccf_standard_name%2Cdata_node&format=application%2Fsolr%2Bjson'
+    url = 'https://esgf-node.llnl.gov/esg-search/search/?offset=0&limit=10000&type=Dataset&replica=false&latest=true&project=CMIP' + cmip_version_value + '&' + variable + frequency + experiment + '&facets=mip_era%2Cactivity_id%2Cmodel_cohort%2Cproduct%2Csource_id%2Cinstitution_id%2Csource_type%2Cnominal_resolution%2Cexperiment_id%2Csub_experiment_id%2Cvariant_label%2Cgrid_label%2Ctable_id%2Cfrequency%2Crealm%2Cvariable_id%2Ccf_standard_name%2Cdata_node&format=application%2Fsolr%2Bjson'
+    print(url)
 
     pool_search = multiprocessing.Pool(number_of_processes)
 
@@ -72,10 +85,10 @@ if __name__ == '__main__':
         pool_search.close()
         pool_search.join()
 
+        files_group_id = variable_value + '_' + frequency_value + '_' + experiment_value + '_' + cmip_version_value
 
-
-        print('3- Writing list of files ' + variable_name + '_' + frequency_value + '_' + experiment_id + '_files_url_list.txt')
-        with open(variable_name + '_' + frequency_value + '_' + experiment_id + '_files_url_list.txt', 'w') as file:
+        print('3- Writing list of files ' + files_group_id + '_files_url_list.txt')
+        with open(files_group_id + '_files_url_list.txt', 'w') as file:
             for file_to_download in files_to_download:
                 file.write(file_to_download + '\n')
             file.close()
@@ -84,7 +97,7 @@ if __name__ == '__main__':
         pool_download = multiprocessing.Pool(int(number_of_processes / 5))
         index = 1
         for file_to_download in files_to_download:
-            pool_download.apply_async(download_file, args=[file_to_download, variable_name + '_' + frequency_value + '_' + experiment_id, index])
+            pool_download.apply_async(download_file, args=[file_to_download, files_group_id, index])
             index += 1
         pool_download.close()
         pool_download.join()
