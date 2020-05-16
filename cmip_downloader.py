@@ -12,10 +12,16 @@ failed_files = multiprocessing.Manager().list()
 def get_files_to_download(url_files_search):
     with urllib.request.urlopen(url_files_search) as result:
         data = json.loads(result.read().decode())
-        file_urls_to_download = data['response']['docs'][0]['url']
+        print(len(data['response']['docs']))
+        file_urls_to_download = data['response']['docs']
+
         for file_url_to_download in file_urls_to_download:
-            if file_url_to_download.split('|')[2] == 'HTTPServer':
-                files_to_download.append(file_url_to_download.split('|')[0])
+
+            for file_dataset_to_download in file_url_to_download['url']:
+
+                if file_dataset_to_download.split('|')[2] == 'HTTPServer':
+                    print(file_dataset_to_download)
+                    files_to_download.append(file_dataset_to_download.split('|')[0])
 
 
 def download_file(url_to_download, variable_name, index):
