@@ -63,7 +63,7 @@ if __name__ == '__main__':
     else:
         experiment_id = 'all'
 
-    url = 'https://esgf-node.llnl.gov/esg-search/search/?offset=0&limit=10000&type=Dataset&replica=false&latest=true&project=CMIP6&' + variable + frequency + experiment + '&facets=mip_era%2Cactivity_id%2Cmodel_cohort%2Cproduct%2Csource_id%2Cinstitution_id%2Csource_type%2Cnominal_resolution%2Cexperiment_id%2Csub_experiment_id%2Cvariant_label%2Cgrid_label%2Ctable_id%2Cfrequency%2Crealm%2Cvariable_id%2Ccf_standard_name%2Cdata_node&format=application%2Fsolr%2Bjson'
+    url = 'https://esgf-node.llnl.gov/esg-search/search/?offset=0&limit=9999&type=Dataset&replica=false&latest=true&project=CMIP6&' + variable + frequency + experiment + '&facets=mip_era%2Cactivity_id%2Cmodel_cohort%2Cproduct%2Csource_id%2Cinstitution_id%2Csource_type%2Cnominal_resolution%2Cexperiment_id%2Csub_experiment_id%2Cvariant_label%2Cgrid_label%2Ctable_id%2Cfrequency%2Crealm%2Cvariable_id%2Ccf_standard_name%2Cdata_node&format=application%2Fsolr%2Bjson'
 
     pool_search = multiprocessing.Pool(number_of_processes)
 
@@ -72,7 +72,8 @@ if __name__ == '__main__':
         data = json.loads(result_search.read().decode())
         print('2- ' + str(len(data['response']['docs'])) + ' records found. Searching for files to download inside each record...')
         for doc in data['response']['docs']:
-            url_files_search = 'https://esgf-node.llnl.gov/search_files/' + doc['id'] + '/' + doc['index_node'] + '/?limit=10&rnd=' + str(random.randint(100000, 999999))
+            url_files_search = 'https://esgf-node.llnl.gov/search_files/' + doc['id'] + '/' + doc['index_node'] + '/?limit=9999&rnd=' + str(random.randint(100000, 999999))
+
             pool_search.apply_async(get_files_to_download, args=[url_files_search])
 
         pool_search.close()
