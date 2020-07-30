@@ -20,3 +20,4 @@ I'm still improving the code so please be patient and I'm sorry if it breaks for
 
 Bugs, questions or request for new features: thiago@tloureiro.com
 
+[![DOI](https://zenodo.org/badge/183989782.svg)](https://zenodo.org/badge/latestdoi/183989782)
