@@ -27,4 +27,9 @@ def url_open_retry(url, retries = 0, retry_interval = 10):
         break
     return result
 
-print(url_open_retry('https://httpstat.us/500/cors', retries= 3, retry_interval= 2))
+url = 'https://httpstat.us/500/cors'
+# url ='https://google.com'
+with url_open_retry(url, retries= 3, retry_interval= 2) as result_search:
+    print(result_search)
+
+# print(url_open_retry('https://httpstat.us/500/cors', retries= 3, retry_interval= 2))
