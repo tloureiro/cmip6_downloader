@@ -8,6 +8,7 @@ import argparse
 from urllib.parse import urlencode
 import time
 
+
 number_of_processes = 50
 files_to_download = multiprocessing.Manager().list()
 failed_files = multiprocessing.Manager().list()
@@ -29,12 +30,12 @@ def get_files_to_download(url_files_search):
                     files_to_download.append(file_dataset_to_download.split('|')[0])
 
 
-def download_file(url_to_download, variable_name, index):
+def download_file(url_to_download, folder_path, index):
 
     print('\t Downloading file [' + str(index) + '/' + str(len(files_to_download)) +'] ' + url_to_download)
 
     for currentRun in range(0, 6):
-        result_code = os.system('wget -nc -c --retry-connrefused --waitretry=10 --quiet -o /dev/null -P ' + variable_name + ' ' + url_to_download )
+        result_code = os.system('wget -nc -c --retry-connrefused --waitretry=10 --quiet -o /dev/null -P ' + folder_path + ' ' + url_to_download )
         if result_code == 0:
             break
 
@@ -99,7 +100,7 @@ def get_params():
 
 def print_and_log(text):
     print(text)
-    log_file.write(text)
+    log_file.write(str(text))
     log_file.write('\n')
 
 
@@ -117,39 +118,99 @@ def url_open_retry(url, retries=0, retry_interval=10):
         break
     return result
 
-# def get_url():
 
-# url = 'https://esgf-node.llnl.gov/esg-search/search/?offset=0&limit=9999&type=Dataset&replica=false&latest=true&project=CMIP6&' + variable + frequency + experiment + '&facets=mip_era%2Cactivity_id%2Cmodel_cohort%2Cproduct%2Csource_id%2Cinstitution_id%2Csource_type%2Cnominal_resolution%2Cexperiment_id%2Csub_experiment_id%2Cvariant_label%2Cgrid_label%2Ctable_id%2Cfrequency%2Crealm%2Cvariable_id%2Ccf_standard_name%2Cdata_node&format=application%2Fsolr%2Bjson'
+def get_folder_path(search_params_dictionary):
+    search_params_to_abbreviations = {
+        'mip_era': 'me',
+        'activity_id': 'a',
+        'model_cohort': 'mc',
+        'product': 'p',
+        'source_id': 's',
+        'institution_id': 'i',
+        'source_type': 'st',
+        'nominal_resolution': 'nr',
+        'experiment_id': 'e',
+        'sub_experiment_id': 'se',
+        'variant_label': 'vl',
+        'grid_label': 'g',
+        'table_id': 't',
+        'frequency': 'f',
+        'realm': 'r',
+        'variable_id': 'v',
+        'cf_standard_name': 'cf',
+        'data_node': 'd'
+    }
+
+    folder_name_parts = []
+    for key, value in search_params_dictionary.items():
+        folder_name_parts.append(search_params_to_abbreviations[key] + '_' + value)
+
+    folder_name = '_'.join(folder_name_parts)
+    return 'data' + os.path.sep + folder_name
+
+
+def get_number_of_previously_downloaded_files(folder_path):
+    if os.path.exists(folder_path):
+        return len([name for name in os.listdir(folder_path) if os.path.isfile(name)])
+    else:
+        return 0
+
 
 if __name__ == '__main__':
 
-    pool_search = multiprocessing.Pool(number_of_processes)
-
     config_params_dictionary, search_params_dictionary = get_params()
 
-    url_params_dictionary = search_params_dictionary.copy()
-    url_params_dictionary.update(config_params_dictionary)
+    if search_params_dictionary:
 
-    records_search_url = 'https://esgf-node.llnl.gov/esg-search/search/?' + urlencode(url_params_dictionary)
+        url_params_dictionary = search_params_dictionary.copy()
+        url_params_dictionary.update(config_params_dictionary)
 
-    print_and_log('1- Searching for records: ' + records_search_url)
-    records_content = url_open_retry(records_search_url, 3, 10)
+        folder_path = get_folder_path(search_params_dictionary)
 
-    if records_content:
-        records = json.loads(records_content.read().decode())
-        print_and_log(records)
+        records_search_url = 'https://esgf-node.llnl.gov/esg-search/search/?' + urlencode(url_params_dictionary)
+
+        print_and_log('1- Searching for records: ' + records_search_url)
+        records_content = url_open_retry(records_search_url, 3, 10)
+
+        if records_content:
+            records = json.loads(records_content.read().decode())
+            print_and_log(records)
+            total_number_of_records = len(records['response']['docs'])
+            if total_number_of_records > 0:
+                total_number_of_files = 0
+                for record in records['response']['docs']:
+                    total_number_of_files += int(record['number_of_files'])
+
+                if total_number_of_files > 0:
+                    number_of_previously_downloaded_files = get_number_of_previously_downloaded_files(folder_path)
+
+                    if (number_of_previously_downloaded_files == 0) or (0 < number_of_previously_downloaded_files < total_number_of_files):
+
+                        if number_of_previously_downloaded_files == 0:
+                            print_and_log('3- No previously downloaded files found')
+                        elif 0 < number_of_previously_downloaded_files < total_number_of_files:
+                            print_and_log('3- ' + str(number_of_previously_downloaded_files) + '/' + str(total_number_of_files) + ' files were previously downloaded. Attempting to download missing ones...')
+
+                        pool_search = multiprocessing.Pool(number_of_processes)
+
+                        for record in records['response']['docs']:
+                            url_files_search = 'https://esgf-node.llnl.gov/search_files/' + record['id'] + '/' + record['index_node'] + '/?limit=9999&rnd=' + str(random.randint(100000, 999999))
+                            pool_search.apply_async(get_files_to_download, args=[url_files_search])
+
+                        pool_search.close()
+                        pool_search.join()
+
+                    else:
+                        print_and_log('All files were previously downloaded. Check ' + folder_path + ' folder')
+                else:
+                    print_and_log('No files found inside the records')
+            else:
+                print_and_log('No records found :(')
+        else:
+            print_and_log('There was a problem searching for the records')
     else:
-        print_and_log('There was a problem searching for the records')
+        print_and_log('No search params provided :(')
 
-
-    print_and_log('2- ' + str(len(records['response']['docs'])) + ' records found. Searching for files to download inside each record...')
-#         for doc in data['response']['docs']:
-#             url_files_search = 'https://esgf-node.llnl.gov/search_files/' + doc['id'] + '/' + doc['index_node'] + '/?limit=9999&rnd=' + str(random.randint(100000, 999999))
-#
-#             pool_search.apply_async(get_files_to_download, args=[url_files_search])
-#
-#         pool_search.close()
-#         pool_search.join()
 #
 #
 #
