@@ -16,9 +16,8 @@ log_file = open('logs.txt', 'w')
 
 
 def get_files_to_download(url_files_search):
-    with urllib.request.urlopen(url_files_search) as result:
+    with url_open_retry(url_files_search, 5, 10) as result:
         data = json.loads(result.read().decode())
-        print(len(data['response']['docs']))
         file_urls_to_download = data['response']['docs']
 
         for file_url_to_download in file_urls_to_download:
@@ -26,21 +25,22 @@ def get_files_to_download(url_files_search):
             for file_dataset_to_download in file_url_to_download['url']:
 
                 if file_dataset_to_download.split('|')[2] == 'HTTPServer':
-                    print(file_dataset_to_download)
                     files_to_download.append(file_dataset_to_download.split('|')[0])
 
 
 def download_file(url_to_download, folder_path, index):
 
-    print('\t Downloading file [' + str(index) + '/' + str(len(files_to_download)) +'] ' + url_to_download)
+    print_and_log('\t Downloading file [' + str(index) + '/' + str(len(files_to_download)) +'] ' + url_to_download)
 
-    for currentRun in range(0, 6):
-        result_code = os.system('wget -nc -c --retry-connrefused --waitretry=10 --quiet -o /dev/null -P ' + folder_path + ' ' + url_to_download )
+    for currentRun in range(0, int(number_of_processes / 10)):
+        result_code = os.system('wget -nc -c --retry-connrefused --waitretry=10 --quiet -o /dev/null -P ' + folder_path + ' ' + url_to_download)
         if result_code == 0:
             break
+        else:
+            print_and_log('There was a problem downloading ' + url_to_download + '. Retrying...')
 
     if result_code != 0:
-        print('Failed to download ' + url_to_download)
+        print_and_log('Failed to download ' + url_to_download)
         failed_files.append(url_to_download)
 
 
@@ -146,12 +146,12 @@ def get_folder_path(search_params_dictionary):
         folder_name_parts.append(search_params_to_abbreviations[key] + '_' + value)
 
     folder_name = '_'.join(folder_name_parts)
-    return 'data' + os.path.sep + folder_name
+    return 'data' + os.path.sep + folder_name, folder_name
 
 
 def get_number_of_previously_downloaded_files(folder_path):
     if os.path.exists(folder_path):
-        return len([name for name in os.listdir(folder_path) if os.path.isfile(name)])
+        return len([name for name in os.listdir(folder_path) if os.path.isfile(folder_path + os.path.sep + name)])
     else:
         return 0
 
@@ -165,7 +165,7 @@ if __name__ == '__main__':
         url_params_dictionary = search_params_dictionary.copy()
         url_params_dictionary.update(config_params_dictionary)
 
-        folder_path = get_folder_path(search_params_dictionary)
+        folder_path, folder_name = get_folder_path(search_params_dictionary)
 
         records_search_url = 'https://esgf-node.llnl.gov/esg-search/search/?' + urlencode(url_params_dictionary)
 
@@ -174,7 +174,6 @@ if __name__ == '__main__':
 
         if records_content:
             records = json.loads(records_content.read().decode())
-            print_and_log(records)
             total_number_of_records = len(records['response']['docs'])
             if total_number_of_records > 0:
                 total_number_of_files = 0
@@ -187,12 +186,13 @@ if __name__ == '__main__':
                     if (number_of_previously_downloaded_files == 0) or (0 < number_of_previously_downloaded_files < total_number_of_files):
 
                         if number_of_previously_downloaded_files == 0:
-                            print_and_log('3- No previously downloaded files found')
+                            print_and_log('2- No previously downloaded files found')
                         elif 0 < number_of_previously_downloaded_files < total_number_of_files:
-                            print_and_log('3- ' + str(number_of_previously_downloaded_files) + '/' + str(total_number_of_files) + ' files were previously downloaded. Attempting to download missing ones...')
+                            print_and_log('2- ' + str(number_of_previously_downloaded_files) + '/' + str(total_number_of_files) + ' files were previously downloaded. Attempting to download missing ones...')
 
                         pool_search = multiprocessing.Pool(number_of_processes)
 
+                        print_and_log('3- Fetching list of files to be downloaded...')
                         for record in records['response']['docs']:
                             url_files_search = 'https://esgf-node.llnl.gov/search_files/' + record['id'] + '/' + record['index_node'] + '/?limit=9999&rnd=' + str(random.randint(100000, 999999))
                             pool_search.apply_async(get_files_to_download, args=[url_files_search])
@@ -200,6 +200,31 @@ if __name__ == '__main__':
                         pool_search.close()
                         pool_search.join()
 
+                        print_and_log('4- ' + str(len(files_to_download)) + '/' + str(total_number_of_files) + ' files added to download list')
+
+                        if len(files_to_download) < total_number_of_files:
+                            print_and_log('Not all files were found and added to the download list. Try running the downloader again with the same params and hopefully the servers will behave next time')
+
+                        print_and_log('5- Writing list of files ' + folder_name + '_files_url_list.txt')
+                        with open(folder_name + '_files_url_list.txt', 'w') as file:
+                            for file_to_download in files_to_download:
+                                file.write(file_to_download + '\n')
+                            file.close()
+
+                            print_and_log('6- Downloading files...FINALLY')
+                            pool_download = multiprocessing.Pool(int(number_of_processes / 5))
+                            index = 1
+                            for file_to_download in files_to_download:
+                                pool_download.apply_async(download_file, args=[file_to_download, folder_path, index])
+                                index += 1
+                            pool_download.close()
+                            pool_download.join()
+
+                            print_and_log('Done :)')
+                            if len(failed_files) > 0:
+                                print_and_log('The script was not able to download some files (you can try running the script again):')
+                                for failed_file in failed_files:
+                                    print_and_log(failed_file)
                     else:
                         print_and_log('All files were previously downloaded. Check ' + folder_path + ' folder')
                 else:
@@ -211,33 +236,6 @@ if __name__ == '__main__':
     else:
         print_and_log('No search params provided :(')
 
-#
-#
-#
-#         print('3- Writing list of files ' + variable_name + '_' + frequency_value + '_' + experiment_id + '_files_url_list.txt')
-#         with open(variable_name + '_' + frequency_value + '_' + experiment_id + '_files_url_list.txt', 'w') as file:
-#             for file_to_download in files_to_download:
-#                 file.write(file_to_download + '\n')
-#             file.close()
-#
-#         print('4- Downloading files...')
-#         pool_download = multiprocessing.Pool(int(number_of_processes / 5))
-#         index = 1
-#         for file_to_download in files_to_download:
-#             pool_download.apply_async(download_file, args=[file_to_download, variable_name + '_' + frequency_value + '_' + experiment_id, index])
-#             index += 1
-#         pool_download.close()
-#         pool_download.join()
-#
-#         print('Done :)')
-#
-#         if len(failed_files) > 0:
-#             print('The script was not able to download some files (you can try running the script again):')
-#             for failed_file in failed_files:
-#                 print(failed_file)
-#
-# #TODO retry
-# #TODO printandlog function
 #
 # # what's new
 # # pure command line or interactive mode
