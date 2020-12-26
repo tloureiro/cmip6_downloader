@@ -225,8 +225,6 @@ if __name__ == '__main__':
                             pool_download.close()
                             pool_download.join()
 
-                            print_and_log('Done :)')
-
                             number_of_previously_downloaded_files = get_number_of_previously_downloaded_files(folder_path)
                             if number_of_previously_downloaded_files == total_number_of_files:
                                 print_and_log('It looks like all ' + str(total_number_of_files) + ' files were downloaded successfully')
@@ -236,6 +234,8 @@ if __name__ == '__main__':
                                     print_and_log('These files were not downloaded:')
                                     for failed_file in failed_files:
                                         print_and_log(failed_file)
+
+                            print_and_log('Done. Check the ' + folder_path + ' folder :)')
 
                     else:
                         print_and_log('All files were previously downloaded. Check ' + folder_path + ' folder')
@@ -247,10 +247,3 @@ if __name__ == '__main__':
             print_and_log('There was a problem searching for the records')
     else:
         print_and_log('No search params provided :(')
-
-#
-# # what's new
-# # pure command line or interactive mode
-# # new folder structure
-# # retries
-# # better user feedback / file logging
