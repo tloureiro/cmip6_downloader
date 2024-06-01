@@ -71,6 +71,8 @@ def get_params():
 
         parser.add_argument('--data_node', metavar='', help='Data Node')
 
+        parser.add_argument('--list_files_only', action='store_true', help='Add this argument to produce the txt file whithout downloading them')
+
         args = parser.parse_args()
         search_params_dictionary = vars(args)
 
@@ -147,6 +149,11 @@ def get_folder_path(search_params_dictionary):
 
     folder_name_parts = []
     for key, value in search_params_dictionary.items():
+
+        # skip args that won't be used in the URL
+        if(key == 'list_files_only'):
+            continue
+
         folder_name_parts.append(search_params_to_abbreviations[key] + '_' + value)
 
     folder_name = '_'.join(folder_name_parts)
@@ -167,7 +174,11 @@ if __name__ == '__main__':
     if search_params_dictionary:
 
         url_params_dictionary = search_params_dictionary.copy()
+
         url_params_dictionary.update(config_params_dictionary)
+
+        # removing args that are not relevant to URL forming
+        del url_params_dictionary['list_files_only']
 
         folder_path, folder_name = get_folder_path(search_params_dictionary)
 
@@ -216,26 +227,29 @@ if __name__ == '__main__':
                                 file.write(file_to_download + '\n')
                             file.close()
 
-                            print_and_log('7- Downloading files...FINALLY')
-                            pool_download = multiprocessing.Pool(int(number_of_processes / 5))
-                            index = 1
-                            for file_to_download in files_to_download:
-                                pool_download.apply_async(download_file, args=[file_to_download, folder_path, index])
-                                index += 1
-                            pool_download.close()
-                            pool_download.join()
-
-                            number_of_previously_downloaded_files = get_number_of_previously_downloaded_files(folder_path)
-                            if number_of_previously_downloaded_files == total_number_of_files:
-                                print_and_log('It looks like all ' + str(total_number_of_files) + ' files were downloaded successfully')
+                            if (search_params_dictionary['list_files_only']):
+                                print_and_log('--list_files_only argument passed, skipping files download. Done.')
                             else:
-                                print_and_log('Not all files (' + str(number_of_previously_downloaded_files) + '/' + str(total_number_of_files) + ') were downloaded. You can try running the script again')
-                                if len(failed_files) > 0:
-                                    print_and_log('These files were not downloaded:')
-                                    for failed_file in failed_files:
-                                        print_and_log(failed_file)
+                                print_and_log('7- Downloading files...FINALLY')
+                                pool_download = multiprocessing.Pool(int(number_of_processes / 5))
+                                index = 1
+                                for file_to_download in files_to_download:
+                                    pool_download.apply_async(download_file, args=[file_to_download, folder_path, index])
+                                    index += 1
+                                pool_download.close()
+                                pool_download.join()
 
-                            print_and_log('Done. Check the ' + folder_path + ' folder :)')
+                                number_of_previously_downloaded_files = get_number_of_previously_downloaded_files(folder_path)
+                                if number_of_previously_downloaded_files == total_number_of_files:
+                                    print_and_log('It looks like all ' + str(total_number_of_files) + ' files were downloaded successfully')
+                                else:
+                                    print_and_log('Not all files (' + str(number_of_previously_downloaded_files) + '/' + str(total_number_of_files) + ') were downloaded. You can try running the script again')
+                                    if len(failed_files) > 0:
+                                        print_and_log('These files were not downloaded:')
+                                        for failed_file in failed_files:
+                                            print_and_log(failed_file)
+
+                                print_and_log('Done. Check the ' + folder_path + ' folder :)')
 
                     else:
                         print_and_log('All files were previously downloaded. Check ' + folder_path + ' folder')
