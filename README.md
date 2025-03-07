@@ -1,5 +1,3 @@
-Version 2 doesn't seem to work anymore - a pre-release of version 3 is available [here](https://github.com/tloureiro/cmip6_downloader/releases/tag/3.0.0.alpha). Please test and send me feedback!
-
 __Requirements:__
 - Python 3
 
