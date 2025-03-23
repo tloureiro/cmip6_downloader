@@ -24,6 +24,14 @@ Also, a file list is generated and placed in the root folder. Inside this .txt f
 
 Note: Some files might not be downloaded when you run this script (the script will even downloading them again on the first run), if this happens, you can run the script again, provide the same search parameters and only new or previously failed files will be downloaded.
 
+__Performance Tuning:__
+You can adjust the download speed by modifying the `number_of_processes` variable at the beginning of the `cmip6_downloader.py` file. By default, it is set to 10 processes. Increasing this number can speed up downloads, but be cautious:
+
+- Higher values (e.g., 20-30) can significantly increase download speed
+- Too many concurrent connections may cause servers to refuse connections
+- If you encounter connection errors, try reducing the number back to 10 or lower
+- Different data nodes may have different connection limits
+
 I'm still improving the code so please be patient and I'm sorry if it breaks for you somehow. Code contributions are very welcome.
 
 Bugs, questions or request for new features: thiago@tloureiro.com
