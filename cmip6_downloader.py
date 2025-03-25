@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 import time
 
 
-number_of_processes = 50
+number_of_processes = 10
 files_to_download = multiprocessing.Manager().list()
 failed_files = multiprocessing.Manager().list()
 log_file = open('logs.txt', 'w')
@@ -33,7 +33,9 @@ def download_file(url_to_download, folder_path, index):
     print_and_log('\t Downloading file [' + str(index) + '/' + str(len(files_to_download)) +'] ' + url_to_download)
 
     for currentRun in range(0, int(number_of_processes / 10)):
-        result_code = os.system('wget -nc -c --retry-connrefused --waitretry=10 --quiet -o /dev/null -P ' + folder_path + ' ' + url_to_download)
+        command = 'wget --no-check-certificate -nc -c -q --retry-connrefused --waitretry=10 -P ' + folder_path + ' ' + url_to_download
+        # print_and_log(command)
+        result_code = os.system(command)
         if result_code == 0:
             break
         else:
@@ -45,7 +47,7 @@ def download_file(url_to_download, folder_path, index):
 
 
 def get_params():
-    parser = argparse.ArgumentParser(description='CMIP 6 Downloader. Version 2.0.0')
+    parser = argparse.ArgumentParser(description='CMIP 6 Downloader. Version 4.0.0')
 
     if len(sys.argv) > 1:
         parser.add_argument('--mip_era', metavar='', help='MIP Era')
@@ -89,7 +91,7 @@ def get_params():
         'offset': 0,
         'limit': 9999,
         'type': 'Dataset',
-        'replica': 'false',
+        # 'replica': 'false',
         'latest': 'true',
         'project': 'CMIP6',
         'format': 'application/solr+json'
@@ -171,7 +173,7 @@ if __name__ == '__main__':
 
         folder_path, folder_name = get_folder_path(search_params_dictionary)
 
-        records_search_url = 'https://aims2.llnl.gov/metagrid-backend/proxy/search?' + urlencode(url_params_dictionary)
+        records_search_url = 'https://aims2.llnl.gov/proxy/search?' + urlencode(url_params_dictionary)
 
         print_and_log('1- Searching for records: ' + records_search_url)
         records_content = url_open_retry(records_search_url, 3, 10)
@@ -188,6 +190,16 @@ if __name__ == '__main__':
                     number_of_previously_downloaded_files = get_number_of_previously_downloaded_files(folder_path)
                     print_and_log('2- ' + str(total_number_of_files) + ' files found in ' + str(total_number_of_records) + ' records. ' + str(number_of_previously_downloaded_files) + ' of these files were already downloaded.')
 
+                    # Check for unique files in URL list before downloading
+                    if os.path.exists(folder_name + '_files_url_list.txt'):
+                        with open(folder_name + '_files_url_list.txt', 'r') as file:
+                            url_list = file.readlines()
+                            filenames = [url.strip().split('/')[-1] for url in url_list]
+                            unique_filenames = set(filenames)
+                            if number_of_previously_downloaded_files == len(unique_filenames):
+                                print_and_log('3-All unique files have already been downloaded')
+                                exit(0)
+
                     if (number_of_previously_downloaded_files == 0) or (0 < number_of_previously_downloaded_files < total_number_of_files):
 
                         if number_of_previously_downloaded_files == 0:
@@ -199,7 +211,7 @@ if __name__ == '__main__':
 
                         print_and_log('4- Fetching list of files to be downloaded...')
                         for record in records['response']['docs']:
-                            url_files_search = 'https://aims2.llnl.gov/metagrid-backend/proxy/search?dataset_id=' + urllib.parse.quote(record['id']) + '&format=application%2Fsolr%2Bjson&limit=9999&offset=0&type=File'
+                            url_files_search = 'https://aims2.llnl.gov/proxy/search?dataset_id=' + urllib.parse.quote(record['id']) + '&format=application%2Fsolr%2Bjson&limit=9999&offset=0&type=File'
 
                             print(url_files_search)
                             pool_search.apply_async(get_files_to_download, args=[url_files_search])
@@ -231,11 +243,20 @@ if __name__ == '__main__':
                             if number_of_previously_downloaded_files == total_number_of_files:
                                 print_and_log('It looks like all ' + str(total_number_of_files) + ' files were downloaded successfully')
                             else:
-                                print_and_log('Not all files (' + str(number_of_previously_downloaded_files) + '/' + str(total_number_of_files) + ') were downloaded. You can try running the script again')
-                                if len(failed_files) > 0:
-                                    print_and_log('These files were not downloaded:')
-                                    for failed_file in failed_files:
-                                        print_and_log(failed_file)
+                                # Check for duplicates in the URL list file
+                                with open(folder_name + '_files_url_list.txt', 'r') as file:
+                                    url_list = file.readlines()
+                                    filenames = [url.strip().split('/')[-1] for url in url_list]
+                                    unique_filenames = set(filenames)
+                                    
+                                    if len(unique_filenames) == number_of_previously_downloaded_files:
+                                        print_and_log('All expected files were found in the URL list (duplicates were found and can be ignored)')
+                                    else:
+                                        print_and_log('Not all files (' + str(number_of_previously_downloaded_files) + '/' + str(total_number_of_files) + ') were downloaded. You can try running the script again')
+                                        if len(failed_files) > 0:
+                                            print_and_log('These files were not downloaded:')
+                                            for failed_file in failed_files:
+                                                print_and_log(failed_file)
 
                             print_and_log('Done. Check the ' + folder_path + ' folder :)')
 
