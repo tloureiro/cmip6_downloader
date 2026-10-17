@@ -1,272 +1,391 @@
-import urllib.request
-import json
-import random
-import multiprocessing
-import os
-import sys
+"""Search ESGF metadata and fetch verified CMIP6 files. Importing has no side effects."""
+
 import argparse
-from urllib.parse import urlencode
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass
+import fcntl
+import hashlib
+from http.client import HTTPException
+import json
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import threading
 import time
+from urllib.error import URLError
+from urllib.parse import unquote, urlencode, urlsplit
+import urllib.request
+
+VERSION = '5.0.0'
+SEARCH_URL = 'https://metagrid.esgf-west.org/proxy/search'
+FACETS = (
+    'mip_era', 'activity_id', 'model_cohort', 'product', 'source_id',
+    'institution_id', 'source_type', 'nominal_resolution', 'experiment_id',
+    'sub_experiment_id', 'variant_label', 'grid_label', 'table_id', 'frequency',
+    'realm', 'variable_id', 'cf_standard_name', 'data_node',
+)
+PAGE_SIZE = 500
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
 
-number_of_processes = 10
-files_to_download = multiprocessing.Manager().list()
-failed_files = multiprocessing.Manager().list()
-log_file = open('logs.txt', 'w')
+class DownloadError(Exception):
+    """An actionable search, validation or transfer failure."""
 
 
-def get_files_to_download(url_files_search):
-    with url_open_retry(url_files_search, 5, 10) as result:
-        data = json.loads(result.read().decode())
-        file_urls_to_download = data['response']['docs']
-
-        for file_url_to_download in file_urls_to_download:
-
-            for file_dataset_to_download in file_url_to_download['url']:
-
-                if file_dataset_to_download.split('|')[2] == 'HTTPServer':
-                    files_to_download.append(file_dataset_to_download.split('|')[0])
+@dataclass(frozen=True)
+class File:
+    name: str
+    url: str
+    size: int
+    checksum_type: str
+    checksum: str
 
 
-def download_file(url_to_download, folder_path, index):
-
-    print_and_log('\t Downloading file [' + str(index) + '/' + str(len(files_to_download)) +'] ' + url_to_download)
-
-    for currentRun in range(0, int(number_of_processes / 10)):
-        command = 'wget --no-check-certificate -nc -c -q --retry-connrefused --waitretry=10 -P ' + folder_path + ' ' + url_to_download
-        # print_and_log(command)
-        result_code = os.system(command)
-        if result_code == 0:
-            break
-        else:
-            print_and_log('There was a problem downloading ' + url_to_download + '. Retrying...')
-
-    if result_code != 0:
-        print_and_log('Failed to download ' + url_to_download)
-        failed_files.append(url_to_download)
+def https_url(url):
+    if not isinstance(url, str) or any(ord(c) <= 32 or ord(c) == 127 for c in url):
+        raise DownloadError('URL contains whitespace or control characters')
+    parsed = urlsplit(url)
+    if (parsed.scheme != 'https' or not parsed.hostname or parsed.username is not None
+            or parsed.password is not None or parsed.fragment):
+        raise DownloadError('Only credential-free HTTPS URLs without fragments are supported')
+    # Validate port syntax now, before opening a connection.
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise DownloadError('Invalid URL port') from exc
+    return parsed
 
 
-def get_params():
-    parser = argparse.ArgumentParser(description='CMIP 6 Downloader. Version 4.0.0')
-
-    if len(sys.argv) > 1:
-        parser.add_argument('--mip_era', metavar='', help='MIP Era')
-        parser.add_argument('--activity_id', metavar='', help='Activity')
-        parser.add_argument('--model_cohort', metavar='', help='Model Cohort')
-        parser.add_argument('--product', metavar='', help='Product')
-
-        parser.add_argument('--source_id', metavar='', help='Source ID', )
-        parser.add_argument('--institution_id', metavar='', help='Institution ID')
-        parser.add_argument('--source_type', metavar='', help='Source Type')
-        parser.add_argument('--nominal_resolution', metavar='', help='Nominal Resolution')
-
-        parser.add_argument('--experiment_id', metavar='', help='Experiment ID')
-        parser.add_argument('--sub_experiment_id', metavar='', help='Sub-Experiment')
-        parser.add_argument('--variant_label', metavar='', help='Variant Label')
-        parser.add_argument('--grid_label', metavar='', help='Grid Label')
-
-        parser.add_argument('--table_id', metavar='', help='Table ID')
-        parser.add_argument('--frequency', metavar='', help='Frequency')
-        parser.add_argument('--realm', metavar='', help='Realm')
-        parser.add_argument('--variable_id', metavar='', help='Variable')
-        parser.add_argument('--cf_standard_name', metavar='', help='CF Standard Name')
-
-        parser.add_argument('--data_node', metavar='', help='Data Node')
-
-        args = parser.parse_args()
-        search_params_dictionary = vars(args)
-
-    else:  # interactive mode
-        search_params_dictionary = {
-            'variable_id': input("enter the variable name\n"),
-            'frequency': input("enter the frequency\n"),
-            'experiment_id': input("enter the experiment ID\n"),
-            'source_id': input("enter the source ID\n"),
-        }
-
-    # clean keys that are empty
-    search_params_dictionary = {k: v for k, v in search_params_dictionary.items() if v}
-
-    config_params_dictionary = {
-        'offset': 0,
-        'limit': 9999,
-        'type': 'Dataset',
-        # 'replica': 'false',
-        'latest': 'true',
-        'project': 'CMIP6',
-        'format': 'application/solr+json'
-    }
-
-    return config_params_dictionary, search_params_dictionary
+class HTTPSRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        https_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def print_and_log(text):
-    print(text)
-    log_file.write(str(text))
-    log_file.write('\n')
-
-
-def url_open_retry(url, retries=0, retry_interval=10):
-    result = None
-    for i in range(0, retries):
+def fetch_json(url, attempts, timeout):
+    https_url(url)
+    opener = urllib.request.build_opener(HTTPSRedirectHandler())
+    for attempt in range(attempts):
         try:
-            result = urllib.request.urlopen(url)
+            with opener.open(url, timeout=timeout) as response:
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+            if len(raw) > MAX_RESPONSE_BYTES:
+                raise DownloadError('Metadata response exceeds 4 MiB; narrow the search')
+            return json.loads(raw)
+        except (URLError, TimeoutError, OSError, HTTPException) as exc:
+            if attempt + 1 == attempts:
+                raise DownloadError('Metadata request failed after bounded attempts; check endpoint/TLS') from exc
+            time.sleep(min(2 ** attempt, 4))
+        except (ValueError, UnicodeError) as exc:
+            raise DownloadError('Metadata response is not valid JSON') from exc
+
+
+def integer(value, label):
+    if isinstance(value, bool) or not re.fullmatch(r'[0-9]+', str(value)):
+        raise DownloadError('Invalid metadata ' + label)
+    return int(value)
+
+
+def search(endpoint, params, options):
+    """Paginate fully or fail; never quietly return a truncated search."""
+    offset = 0
+    total = None
+    records = []
+    ids = set()
+    while total is None or offset < total:
+        query = dict(params, offset=offset, limit=PAGE_SIZE, format='application/solr+json')
+        data = fetch_json(endpoint + '?' + urlencode(query), options.attempts, options.timeout)
+        try:
+            response = data['response']
+            count = integer(response['numFound'], 'numFound')
+            docs = response['docs']
+        except (KeyError, TypeError) as exc:
+            raise DownloadError('Expected response.numFound and response.docs in metadata') from exc
+        if (not isinstance(docs, list) or len(docs) > PAGE_SIZE or count > options.max_records
+                or (total is not None and count != total)):
+            raise DownloadError('Metadata changed, exceeded limits or has an invalid page; narrow/retry search')
+        total = count
+        if (not docs and offset < total) or offset + len(docs) > total:
+            raise DownloadError('Metadata pagination is incomplete or inconsistent')
+        for doc in docs:
+            if not isinstance(doc, dict) or not isinstance(doc.get('id'), str) or not doc['id']:
+                raise DownloadError('Metadata record has no valid id')
+            if doc['id'] in ids:
+                raise DownloadError('Repeated record in metadata pagination; retry search')
+            ids.add(doc['id'])
+            records.append(doc)
+        offset += len(docs)
+    return records
+
+
+def scalar(doc, field):
+    value = doc.get(field)
+    if isinstance(value, list):
+        if len(value) != 1:
+            raise DownloadError('Expected a single metadata ' + field)
+        value = value[0]
+    return value
+
+
+def file_from_doc(doc):
+    urls = doc.get('url')
+    if not isinstance(urls, list):
+        raise DownloadError('File metadata has no URL list')
+    candidates = []
+    for entry in urls:
+        parts = entry.split('|') if isinstance(entry, str) else []
+        if len(parts) == 3 and parts[2] == 'HTTPServer':
+            # Do not silently upgrade HTTP: server support must be explicit.
+            if parts[0].startswith('https://'):
+                candidates.append(parts[0])
+    if not candidates:
+        raise DownloadError('File has no supported HTTPS HTTPServer URL')
+    url = sorted(candidates)[0]
+    parsed = https_url(url)
+    name = unquote(parsed.path.rsplit('/', 1)[-1])
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,195}\.nc', name):
+        raise DownloadError('Unsafe or unsupported NetCDF filename in metadata')
+    size = integer(scalar(doc, 'size'), 'file size')
+    algorithm = str(scalar(doc, 'checksum_type')).lower().replace('-', '')
+    checksum = str(scalar(doc, 'checksum')).lower()
+    length = {'sha256': 64, 'sha1': 40, 'md5': 32}.get(algorithm)
+    if size == 0 or length is None or not re.fullmatch('[0-9a-f]{' + str(length) + '}', checksum):
+        raise DownloadError('File requires positive size and a supported MD5/SHA1/SHA256 checksum')
+    return File(name, url, size, algorithm, checksum)
+
+
+def collect_files(filters, options):
+    datasets = search(options.search_url, dict(filters, type='Dataset', latest='true', project='CMIP6'), options)
+    files = {}
+    expected_total = 0
+    for dataset in datasets:
+        expected = integer(scalar(dataset, 'number_of_files'), 'number_of_files')
+        expected_total += expected
+        if expected_total > options.max_records:
+            raise DownloadError('Total file metadata exceeds --max-records; narrow filters')
+        docs = search(options.search_url, {'type': 'File', 'dataset_id': dataset['id']}, options)
+        if len(docs) != expected:
+            raise DownloadError('Dataset file count differs from search results; retry search')
+        for doc in docs:
+            item = file_from_doc(doc)
+            key = item.name.casefold()
+            previous = files.get(key)
+            if previous and (previous.name, previous.size, previous.checksum_type, previous.checksum) != (
+                    item.name, item.size, item.checksum_type, item.checksum):
+                raise DownloadError('Conflicting files share a filename; narrow filters')
+            files.setdefault(key, item)
+            if len(files) > options.max_records:
+                raise DownloadError('Too many files; narrow filters or explicitly raise --max-records')
+    return list(files.values())
+
+
+def output_folder(root, filters):
+    canonical = json.dumps(filters, sort_keys=True, separators=(',', ':'))
+    digest = hashlib.sha256(canonical.encode()).hexdigest()[:16]
+    variable = re.sub(r'[^A-Za-z0-9-]', '-', filters.get('variable_id', 'selection'))[:32]
+    return Path(root).absolute() / (variable + '-' + digest)
+
+
+def regular_path(path):
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise DownloadError('Expected a regular file, refusing: ' + path.name)
+    if path.exists() and path.stat().st_nlink != 1:
+        raise DownloadError('Refusing a hard-linked file: ' + path.name)
+
+
+def complete(path, item, stop):
+    regular_path(path)
+    if not path.exists() or path.stat().st_size != item.size:
+        return False
+    digest = hashlib.new(item.checksum_type, usedforsecurity=False)
+    with path.open('rb') as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b''):
+            if stop.is_set():
+                raise DownloadError('Interrupted')
+            digest.update(chunk)
+    return digest.hexdigest() == item.checksum
+
+
+@contextmanager
+def output_lock(folder):
+    folder.mkdir(parents=True, exist_ok=True)
+    if folder.is_symlink():
+        raise DownloadError('Refusing a symlink output folder')
+    path = folder / '.download.lock'
+    regular_path(path)
+    with path.open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise DownloadError('Another download is using this output folder') from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def write_manifest(folder, filters, files):
+    final = folder / 'manifest.json'
+    temp = folder / 'manifest.json.tmp'
+    regular_path(final)
+    regular_path(temp)
+    temp.write_text(json.dumps({'filters': filters, 'files': [asdict(item) for item in files]}, indent=2) + '\n')
+    temp.replace(final)
+
+
+def wget_attempt(command, timeout, stop):
+    # No shell, personal wget config, credentials, HSTS writes or redirects.
+    with subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as process:
+        deadline = time.monotonic() + timeout
+        try:
+            while process.poll() is None:
+                if stop.wait(0.1) or time.monotonic() >= deadline:
+                    raise DownloadError('Interrupted' if stop.is_set() else 'Transfer timed out')
+            return process.returncode
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+
+
+def download_file(item, folder, options, stop):
+    final = folder / item.name
+    partial = folder / (item.name + '.part')
+    if complete(final, item, stop):
+        return 'Verified existing ' + item.name
+    if final.exists():
+        raise DownloadError('Existing file failed verification; preserve/move it before retrying: ' + item.name)
+    regular_path(partial)
+    for attempt in range(options.attempts):
+        if stop.is_set():
+            raise DownloadError('Interrupted')
+        if complete(partial, item, stop):
+            partial.replace(final)
+            return 'Verified ' + item.name
+        if partial.exists() and partial.stat().st_size >= item.size:
+            raise DownloadError('Partial file failed checksum/size; move it aside before retrying: ' + item.name)
+        command = [options.wget, '--no-config', '--no-netrc', '--no-hsts', '--no-iri',
+                   '--max-redirect=0', '--tries=1', '--timeout=60', '--continue',
+                   '--output-document=' + str(partial), '--', item.url]
+        try:
+            code = wget_attempt(command, options.timeout, stop)
+            if code == 0 and complete(partial, item, stop):
+                partial.replace(final)
+                return 'Verified ' + item.name
+            reason = 'wget exit ' + str(code) + ' or incomplete/checksum mismatch'
+        except DownloadError as exc:
+            reason = str(exc)
+        if stop.is_set() or attempt + 1 == options.attempts:
             break
-        except:
-
-            if i == (retries - 1):
-                print_and_log('failed to fetch ' + url)
-            else:
-                print_and_log('retrying ' + str((i + 1)) + '/' + str((retries - 1)) + ' ' + url)
-                time.sleep(retry_interval)
-
-            continue
-        break
-    return result
+        stop.wait(min(2 ** attempt, 4))
+    raise DownloadError(item.name + ': ' + reason + '; partial retained, rerun the same filters')
 
 
-def get_folder_path(search_params_dictionary):
-    search_params_to_abbreviations = {
-        'mip_era': 'me',
-        'activity_id': 'a',
-        'model_cohort': 'mc',
-        'product': 'p',
-        'source_id': 's',
-        'institution_id': 'i',
-        'source_type': 'st',
-        'nominal_resolution': 'nr',
-        'experiment_id': 'e',
-        'sub_experiment_id': 'se',
-        'variant_label': 'vl',
-        'grid_label': 'g',
-        'table_id': 't',
-        'frequency': 'f',
-        'realm': 'r',
-        'variable_id': 'v',
-        'cf_standard_name': 'cf',
-        'data_node': 'd'
-    }
-
-    folder_name_parts = []
-    for key, value in search_params_dictionary.items():
-        folder_name_parts.append(search_params_to_abbreviations[key] + '_' + value)
-
-    folder_name = '_'.join(folder_name_parts)
-    return 'data' + os.path.sep + folder_name, folder_name
+def download_all(files, folder, options, stop):
+    failures = 0
+    iterator = iter(files)
+    pool = ThreadPoolExecutor(max_workers=options.workers)
+    pending = set()
+    try:
+        # Bound queued work as well as active wget processes.
+        for _ in range(min(options.workers, len(files))):
+            pending.add(pool.submit(download_file, next(iterator), folder, options, stop))
+        while pending:
+            done, pending = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
+            for future in done:
+                try:
+                    print(future.result(), flush=True)
+                except (DownloadError, OSError) as exc:
+                    failures += 1
+                    print('Failed: ' + str(exc), file=sys.stderr, flush=True)
+                item = next(iterator, None)
+                if item is not None:
+                    pending.add(pool.submit(download_file, item, folder, options, stop))
+    finally:
+        stop.set()
+        for future in pending:
+            future.cancel()
+        pool.shutdown(wait=True, cancel_futures=True)
+    return failures
 
 
-def get_number_of_previously_downloaded_files(folder_path):
-    if os.path.exists(folder_path):
-        return len([name for name in os.listdir(folder_path) if os.path.isfile(folder_path + os.path.sep + name)])
-    else:
-        return 0
+def bounded(low, high):
+    def parse(value):
+        try:
+            result = int(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError('Expected an integer') from exc
+        if not low <= result <= high:
+            raise argparse.ArgumentTypeError('Expected ' + str(low) + '..' + str(high))
+        return result
+    return parse
+
+
+def get_params(argv=None):
+    parser = argparse.ArgumentParser(description='CMIP6 search and verified downloads (' + VERSION + ')')
+    for facet in FACETS:
+        parser.add_argument('--' + facet, help='ESGF ' + facet + ' filter')
+    parser.add_argument('--version', action='version', version=VERSION)
+    parser.add_argument('--output', type=Path, default=Path('data'), help='Output root (default: data)')
+    parser.add_argument('--search-url', default=SEARCH_URL, help='HTTPS ESGF Solr search endpoint')
+    parser.add_argument('--workers', type=bounded(1, 8), default=2)
+    parser.add_argument('--attempts', type=bounded(1, 5), default=3, help='Total attempts per request/file, independent of workers')
+    parser.add_argument('--timeout', type=bounded(1, 3600), default=300, help='Metadata socket / whole transfer attempt timeout in seconds')
+    parser.add_argument('--max-records', type=bounded(1, 100000), default=10000, help='Cap each search and total file records including replicas')
+    parser.add_argument('--dry-run', action='store_true', help='Search metadata and print plan; no files written or downloaded (requires network)')
+    options = parser.parse_args(argv)
+    filters = {key: getattr(options, key).strip() for key in FACETS if getattr(options, key) and getattr(options, key).strip()}
+    if not (sys.argv[1:] if argv is None else argv):
+        for key in ('variable_id', 'frequency', 'experiment_id', 'source_id'):
+            value = input('Enter ' + key + ' (blank to omit): ').strip()
+            if value:
+                filters[key] = value
+    if not filters:
+        parser.error('Provide at least one search filter; use --help')
+    if any(len(value) > 512 or any(ord(c) < 32 or ord(c) == 127 for c in value) for value in filters.values()):
+        parser.error('Filters must be at most 512 characters with no control characters')
+    https_url(options.search_url)
+    if urlsplit(options.search_url).query:
+        parser.error('--search-url must not include query parameters')
+    return options, filters
+
+
+def main(argv=None):
+    try:
+        options, filters = get_params(argv)
+        if not options.dry_run:
+            options.wget = shutil.which('wget')
+            if not options.wget:
+                raise DownloadError('GNU wget is required for downloads; install it or use --dry-run')
+        print('Searching metadata (no data transfers until the complete plan validates)', flush=True)
+        files = collect_files(filters, options)
+        if not files:
+            print('No matching files; no output written')
+            return 0
+        folder = output_folder(options.output, filters)
+        print(str(len(files)) + ' unique files, ' + str(sum(item.size for item in files)) + ' bytes; output: ' + str(folder), flush=True)
+        if options.dry_run:
+            print('Dry run: no output written and no files downloaded')
+            return 0
+        with output_lock(folder):
+            write_manifest(folder, filters, files)
+            failures = download_all(files, folder, options, threading.Event())
+        print('Finished: ' + str(len(files) - failures) + ' verified, ' + str(failures) + ' failed')
+        return 1 if failures else 0
+    except (DownloadError, OSError, ValueError) as exc:
+        print('Error: ' + str(exc), file=sys.stderr)
+        return 1
+    except (KeyboardInterrupt, EOFError):
+        print('Interrupted; partial files retained. Rerun the same filters to resume.', file=sys.stderr)
+        return 130
 
 
 if __name__ == '__main__':
-
-    config_params_dictionary, search_params_dictionary = get_params()
-
-    if search_params_dictionary:
-
-        url_params_dictionary = search_params_dictionary.copy()
-        url_params_dictionary.update(config_params_dictionary)
-
-        folder_path, folder_name = get_folder_path(search_params_dictionary)
-
-        records_search_url = 'https://aims2.llnl.gov/proxy/search?' + urlencode(url_params_dictionary)
-
-        print_and_log('1- Searching for records: ' + records_search_url)
-        records_content = url_open_retry(records_search_url, 3, 10)
-
-        if records_content:
-            records = json.loads(records_content.read().decode())
-            total_number_of_records = len(records['response']['docs'])
-            if total_number_of_records > 0:
-                total_number_of_files = 0
-                for record in records['response']['docs']:
-                    total_number_of_files += int(record['number_of_files'])
-
-                if total_number_of_files > 0:
-                    number_of_previously_downloaded_files = get_number_of_previously_downloaded_files(folder_path)
-                    print_and_log('2- ' + str(total_number_of_files) + ' files found in ' + str(total_number_of_records) + ' records. ' + str(number_of_previously_downloaded_files) + ' of these files were already downloaded.')
-
-                    # Check for unique files in URL list before downloading
-                    if os.path.exists(folder_name + '_files_url_list.txt'):
-                        with open(folder_name + '_files_url_list.txt', 'r') as file:
-                            url_list = file.readlines()
-                            filenames = [url.strip().split('/')[-1] for url in url_list]
-                            unique_filenames = set(filenames)
-                            if number_of_previously_downloaded_files == len(unique_filenames):
-                                print_and_log('3-All unique files have already been downloaded')
-                                exit(0)
-
-                    if (number_of_previously_downloaded_files == 0) or (0 < number_of_previously_downloaded_files < total_number_of_files):
-
-                        if number_of_previously_downloaded_files == 0:
-                            print_and_log('3- No previously downloaded files found')
-                        elif 0 < number_of_previously_downloaded_files < total_number_of_files:
-                            print_and_log('3- ' + str(number_of_previously_downloaded_files) + '/' + str(total_number_of_files) + ' files were previously downloaded. Attempting to download missing ones...')
-
-                        pool_search = multiprocessing.Pool(number_of_processes)
-
-                        print_and_log('4- Fetching list of files to be downloaded...')
-                        for record in records['response']['docs']:
-                            url_files_search = 'https://aims2.llnl.gov/proxy/search?dataset_id=' + urllib.parse.quote(record['id']) + '&format=application%2Fsolr%2Bjson&limit=9999&offset=0&type=File'
-
-                            print(url_files_search)
-                            pool_search.apply_async(get_files_to_download, args=[url_files_search])
-
-                        pool_search.close()
-                        pool_search.join()
-
-                        print_and_log('5- ' + str(len(files_to_download)) + '/' + str(total_number_of_files) + ' files added to download list')
-
-                        if len(files_to_download) < total_number_of_files:
-                            print_and_log('Not all files were found and added to the download list. Try running the downloader again with the same params and hopefully the servers will behave next time')
-
-                        print_and_log('6- Writing list of files ' + folder_name + '_files_url_list.txt')
-                        with open(folder_name + '_files_url_list.txt', 'w') as file:
-                            for file_to_download in files_to_download:
-                                file.write(file_to_download + '\n')
-                            file.close()
-
-                            print_and_log('7- Downloading files...FINALLY')
-                            pool_download = multiprocessing.Pool(int(number_of_processes / 5))
-                            index = 1
-                            for file_to_download in files_to_download:
-                                pool_download.apply_async(download_file, args=[file_to_download, folder_path, index])
-                                index += 1
-                            pool_download.close()
-                            pool_download.join()
-
-                            number_of_previously_downloaded_files = get_number_of_previously_downloaded_files(folder_path)
-                            if number_of_previously_downloaded_files == total_number_of_files:
-                                print_and_log('It looks like all ' + str(total_number_of_files) + ' files were downloaded successfully')
-                            else:
-                                # Check for duplicates in the URL list file
-                                with open(folder_name + '_files_url_list.txt', 'r') as file:
-                                    url_list = file.readlines()
-                                    filenames = [url.strip().split('/')[-1] for url in url_list]
-                                    unique_filenames = set(filenames)
-                                    
-                                    if len(unique_filenames) == number_of_previously_downloaded_files:
-                                        print_and_log('All expected files were found in the URL list (duplicates were found and can be ignored)')
-                                    else:
-                                        print_and_log('Not all files (' + str(number_of_previously_downloaded_files) + '/' + str(total_number_of_files) + ') were downloaded. You can try running the script again')
-                                        if len(failed_files) > 0:
-                                            print_and_log('These files were not downloaded:')
-                                            for failed_file in failed_files:
-                                                print_and_log(failed_file)
-
-                            print_and_log('Done. Check the ' + folder_path + ' folder :)')
-
-                    else:
-                        print_and_log('All files were previously downloaded. Check ' + folder_path + ' folder')
-                else:
-                    print_and_log('No files found inside the records')
-            else:
-                print_and_log('No records found :(')
-        else:
-            print_and_log('There was a problem searching for the records')
-    else:
-        print_and_log('No search params provided :(')
+    sys.exit(main())

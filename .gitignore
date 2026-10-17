@@ -1,3 +1,8 @@
 .idea/
 data/
-*txt
+*.txt
+__pycache__/
+*.py[cod]
+.venv/
+*.nc
+*.nc.part
